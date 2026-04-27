@@ -4,34 +4,29 @@ __pycache__/
 *.pyo
 *.pyd
 .Python
+*.egg
 *.egg-info/
 dist/
 build/
 .eggs/
-*.egg
-
-# Virtual environments
-.venv/
 venv/
+.venv/
 env/
-ENV/
 
-# Data / DB
+# Database
 data/*.db
 data/*.db-shm
 data/*.db-wal
-
-# Logs
-*.log
-logs/
 
 # IDE
 .vscode/
 .idea/
 *.swp
 *.swo
-.DS_Store
 
-# Environment
-.env
-.env.local
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log

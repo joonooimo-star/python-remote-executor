@@ -216,16 +216,11 @@ async def kill_run(run_id: str, db) -> bool:
     except Exception as exc:
         logger.error("프로세스 종료 실패 [%s]: %s", run_id, exc)
 
-    # 프로세스 종료 후 남은 stdout을 flush
-    try:
-        remaining = proc.stdout.read()
-        if remaining:
-            for line in remaining.splitlines():
-                line = line.strip()
-                if line:
-                    run["log_buffer"].append(line)
-    except Exception:
-        pass
+    # 로그 수집 스레드가 남은 로그를 flush할 시간을 준다 (최대 1초)
+    import time
+    deadline = time.time() + 1.0
+    while time.time() < deadline:
+        await asyncio.sleep(0.1)
 
     log_text = "\n".join(run["log_buffer"])
     await db.execute(
