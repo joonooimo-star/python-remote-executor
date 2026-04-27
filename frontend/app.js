@@ -3,498 +3,495 @@
  * Vanilla JS, no build step required.
  */
 
-const API = '';   // same origin
-let selectedJobId = null;
-let currentPage   = 1;
-let historyPage   = 1;
-let activeWs      = {};   // { run_id: WebSocket }
-let allJobs       = [];
+const API = {
+  base: window.location.origin,
 
-// ══════════════════════════════════════════════
-//  Utils
-// ══════════════════════════════════════════════
+  async get(path) {
+    const r = await fetch(this.base + path);
+    if (!r.ok) throw new Error((await r.json().catch(() => ({detail: r.statusText}))).detail);
+    return r.json();
+  },
 
-function $(sel, ctx = document) { return ctx.querySelector(sel); }
-function $$(sel, ctx = document) { return [...ctx.querySelectorAll(sel)]; }
+  async post(path, body = {}) {
+    const r = await fetch(this.base + path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!r.ok) throw new Error((await r.json().catch(() => ({detail: r.statusText}))).detail);
+    return r.json();
+  },
 
-async function apiFetch(path, opts = {}) {
-  const res = await fetch(API + path, {
-    headers: { 'Content-Type': 'application/json' },
-    ...opts,
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ detail: res.statusText }));
-    throw new Error(err.detail || res.statusText);
-  }
-  return res.json();
-}
+  async delete(path) {
+    const r = await fetch(this.base + path, { method: 'DELETE' });
+    if (!r.ok) throw new Error((await r.json().catch(() => ({detail: r.statusText}))).detail);
+    return r.json();
+  },
 
-function toast(msg, type = '') {
-  const el = $('#toast');
+  wsUrl(path) {
+    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+    return `${proto}://${location.host}${path}`;
+  },
+};
+
+// ─── State ────────────────────────────────────────────────────────
+const State = {
+  jobs: [],
+  selectedJob: null,
+  activeTag: 'all',
+  activeRunId: null,
+  autoScroll: true,
+  historyPage: 1,
+  historyHasMore: false,
+  ws: null,
+  activeProcesses: {},  // { run_id: { job_id, job_name, pid, started_at } }
+};
+
+// ─── Toast ────────────────────────────────────────────────────────
+function toast(msg, type = 'info') {
+  const el = document.createElement('div');
+  el.className = `toast toast-${type}`;
   el.textContent = msg;
-  el.className = `toast ${type}`;
-  clearTimeout(el._timer);
-  el._timer = setTimeout(() => el.classList.add('hidden'), 3000);
+  document.getElementById('toast-container').appendChild(el);
+  setTimeout(() => el.remove(), 3500);
 }
 
+// ─── Helpers ──────────────────────────────────────────────────────
 function statusBadge(status) {
-  return `<span class="status-badge status-${status}">${status}</span>`;
+  return `<span class="badge badge-${status.toLowerCase()}">${statusDot(status)} ${status}</span>`;
 }
-
-function formatDuration(start, end) {
-  if (!start) return '-';
-  const s = new Date(start), e = end ? new Date(end) : new Date();
-  const sec = Math.floor((e - s) / 1000);
-  const m = Math.floor(sec / 60), ss = sec % 60;
-  return `${String(m).padStart(2,'0')}:${String(ss).padStart(2,'0')}`;
+function statusDot(status) {
+  const dots = { RUNNING: '●', COMPLETED: '✓', FAILED: '✗', KILLED: '⬛', PENDING: '○' };
+  return dots[status] ?? '?';
 }
-
-function formatTime(iso) {
+function elapsed(startedAt, finishedAt) {
+  const s = new Date(startedAt);
+  const e = finishedAt ? new Date(finishedAt) : new Date();
+  const diff = Math.floor((e - s) / 1000);
+  const h = String(Math.floor(diff / 3600)).padStart(2, '0');
+  const m = String(Math.floor((diff % 3600) / 60)).padStart(2, '0');
+  const sc = String(diff % 60).padStart(2, '0');
+  return `${h}:${m}:${sc}`;
+}
+function fmtTime(iso) {
   if (!iso) return '-';
-  return new Date(iso).toLocaleTimeString('ko-KR', { hour12: false });
+  return new Date(iso).toLocaleTimeString('ko-KR');
+}
+function escapeHtml(t) {
+  return String(t)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
 
-function escapeHtml(s) {
-  return String(s)
-    .replace(/&/g,'&amp;')
-    .replace(/</g,'&lt;')
-    .replace(/>/g,'&gt;');
-}
-
-// ══════════════════════════════════════════════
-//  Job List (Sidebar)
-// ══════════════════════════════════════════════
-
+// ─── Job List ─────────────────────────────────────────────────────
 async function loadJobs() {
   try {
-    const data = await apiFetch('/api/jobs');
-    allJobs = data.jobs;
-    renderTags(allJobs);
-    renderJobList(allJobs);
-    populateHistoryJobFilter(allJobs);
+    const data = await API.get('/api/jobs');
+    State.jobs = data.jobs;
+    renderTagFilters();
+    renderJobList();
+    document.getElementById('job-count').textContent = `${data.total}개`;
   } catch (e) {
-    $('#jobList').innerHTML = `<div class="empty-state">❌ Job 로드 실패: ${e.message}</div>`;
+    toast('Job 목록 로드 실패: ' + e.message, 'error');
   }
 }
 
-function renderTags(jobs) {
-  const tagSet = new Set(['all']);
-  jobs.forEach(j => (j.tags || []).forEach(t => tagSet.add(t)));
-  const container = $('#tagFilter');
-  container.innerHTML = [...tagSet].map(t =>
-    `<button class="tag-btn ${t === 'all' ? 'active' : ''}" data-tag="${t}">${t}</button>`
+function renderTagFilters() {
+  const allTags = new Set(['all']);
+  State.jobs.forEach(j => (j.tags || []).forEach(t => allTags.add(t)));
+
+  const el = document.getElementById('tag-filters');
+  if (!el) return;
+  el.innerHTML = [...allTags].map(tag =>
+    `<span class="tag ${State.activeTag === tag ? 'active' : ''}"
+           onclick="App.filterTag('${tag}')">${tag}</span>`
   ).join('');
-  container.querySelectorAll('.tag-btn').forEach(btn =>
-    btn.addEventListener('click', () => {
-      $$('.tag-btn').forEach(b => b.classList.remove('active'));
-      btn.classList.add('active');
-      const tag = btn.dataset.tag;
-      const filtered = tag === 'all' ? allJobs : allJobs.filter(j => (j.tags||[]).includes(tag));
-      renderJobList(filtered);
-    })
-  );
 }
 
-function renderJobList(jobs) {
-  const container = $('#jobList');
-  if (!jobs.length) {
-    container.innerHTML = '<div class="empty-state">등록된 Job이 없습니다.<br/>jobs/ 폴더에 .py 파일을 추가하세요.</div>';
+function renderJobList() {
+  const el = document.getElementById('job-list');
+  if (!el) return;
+  const filtered = State.activeTag === 'all'
+    ? State.jobs
+    : State.jobs.filter(j => (j.tags || []).includes(State.activeTag));
+
+  if (!filtered.length) {
+    el.innerHTML = '<p class="text-gray-600 text-xs px-2 py-4 text-center">Job이 없습니다</p>';
     return;
   }
-  container.innerHTML = jobs.map(j => `
-    <div class="job-card ${j.id === selectedJobId ? 'selected' : ''}" data-id="${j.id}">
-      <div class="job-card-name">
-        <span>⚙️</span> ${escapeHtml(j.name)}
+
+  el.innerHTML = filtered.map(job => `
+    <div class="job-item ${State.selectedJob?.id === job.id ? 'active' : ''}"
+         onclick="App.selectJob('${job.id}')">
+      <div class="flex items-center justify-between">
+        <span class="text-sm font-semibold text-gray-200 truncate">${escapeHtml(job.name)}</span>
+        ${getJobRunningCount(job.id) > 0
+          ? `<span class="badge badge-running">${getJobRunningCount(job.id)} 실행중</span>` : ''}
       </div>
-      <div class="job-card-desc">${escapeHtml(j.description || '설명 없음')}</div>
-      <div class="job-card-tags">
-        ${(j.tags||[]).map(t => `<span class="tag-chip">${escapeHtml(t)}</span>`).join('')}
-      </div>
-      <div class="job-card-actions">
-        <button class="btn btn-primary btn-sm run-btn" data-id="${j.id}">▶ 실행</button>
-      </div>
+      ${job.description
+        ? `<p class="text-xs text-gray-500 mt-0.5 truncate">${escapeHtml(job.description)}</p>` : ''}
+      ${(job.tags || []).length
+        ? `<div class="mt-1 flex flex-wrap gap-1">${(job.tags||[]).map(t => `<span class="tag">${t}</span>`).join('')}</div>` : ''}
     </div>
   `).join('');
-
-  container.querySelectorAll('.job-card').forEach(card =>
-    card.addEventListener('click', (e) => {
-      if (e.target.classList.contains('run-btn')) return;
-      $$('.job-card').forEach(c => c.classList.remove('selected'));
-      card.classList.add('selected');
-      selectedJobId = card.dataset.id;
-    })
-  );
-
-  container.querySelectorAll('.run-btn').forEach(btn =>
-    btn.addEventListener('click', () => openRunModal(btn.dataset.id))
-  );
 }
 
-function populateHistoryJobFilter(jobs) {
-  const sel = $('#historyJobFilter');
-  const current = sel.value;
-  sel.innerHTML = '<option value="">전체 Job</option>' +
-    jobs.map(j => `<option value="${j.id}">${escapeHtml(j.name)}</option>`).join('');
-  sel.value = current;
+function getJobRunningCount(jobId) {
+  return Object.values(State.activeProcesses).filter(p => p.job_id === jobId).length;
 }
 
-// ══════════════════════════════════════════════
-//  Run Modal
-// ══════════════════════════════════════════════
-
-function openRunModal(jobId) {
-  const job = allJobs.find(j => j.id === jobId);
+// ─── Job View ─────────────────────────────────────────────────────
+function selectJob(jobId) {
+  const job = State.jobs.find(j => j.id === jobId);
   if (!job) return;
+  State.selectedJob = job;
 
-  $('#modalTitle').textContent = `▶ ${job.name}`;
+  document.getElementById('welcome-view').classList.add('hidden');
+  document.getElementById('job-view').classList.remove('hidden');
 
-  const params = job.params || [];
-  if (!params.length) {
-    $('#modalBody').innerHTML = `
-      <p class="text-muted text-sm">이 Job은 파라미터가 없습니다.<br/>바로 실행됩니다.</p>`;
-  } else {
-    $('#modalBody').innerHTML = params.map(p => `
-      <div class="form-group">
-        <label class="form-label">${escapeHtml(p.label || p.name)}</label>
-        <input class="form-input" type="${p.type === 'int' || p.type === 'float' ? 'number' : 'text'}"
-          data-name="${p.name}" data-type="${p.type}"
-          value="${p.default !== undefined ? p.default : ''}"
-          placeholder="${p.default !== undefined ? p.default : ''}"/>
-      </div>`).join('');
-  }
+  document.getElementById('jv-name').textContent = job.name;
+  document.getElementById('jv-desc').textContent = job.description || '';
+  document.getElementById('jv-tags').innerHTML = (job.tags || [])
+    .map(t => `<span class="tag">${t}</span>`).join('');
 
-  $('#runModal').classList.remove('hidden');
-  $('#modalRun').onclick = () => executeJob(jobId);
-}
+  renderJobList();
+  renderActiveProcesses();
+  loadHistory(true);
 
-function closeRunModal() { $('#runModal').classList.add('hidden'); }
-
-async function executeJob(jobId) {
-  const params = {};
-  $$('#modalBody .form-input').forEach(inp => {
-    const val = inp.value;
-    const type = inp.dataset.type;
-    params[inp.dataset.name] = type === 'int' ? parseInt(val) :
-                                type === 'float' ? parseFloat(val) : val;
-  });
-
-  closeRunModal();
-  try {
-    const run = await apiFetch(`/api/jobs/${jobId}/run`, {
-      method: 'POST',
-      body: JSON.stringify({ params }),
-    });
-    toast(`▶ 실행 시작: ${run.job_name}`, 'success');
-    openRunPanel(run);
-    switchTab('monitor');
-  } catch (e) {
-    toast(`❌ 실행 실패: ${e.message}`, 'error');
+  const running = Object.entries(State.activeProcesses)
+    .filter(([, p]) => p.job_id === jobId);
+  if (running.length > 0) {
+    attachLog(running[0][0]);
   }
 }
 
-// ══════════════════════════════════════════════
-//  Run Panel (Monitor Tab)
-// ══════════════════════════════════════════════
+function renderActiveProcesses() {
+  const el = document.getElementById('active-processes');
+  if (!el) return;
+  const procs = Object.entries(State.activeProcesses)
+    .filter(([, p]) => !State.selectedJob || p.job_id === State.selectedJob.id);
 
-function openRunPanel(run) {
-  // 빈 상태 제거
-  const emptyEl = $('.empty-state-main');
-  if (emptyEl) emptyEl.remove();
+  if (!procs.length) {
+    el.innerHTML = '<span class="text-xs text-gray-600">실행 중인 프로세스 없음</span>';
+    return;
+  }
 
-  const panels = $('#runPanels');
-  const panelId = `panel-${run.run_id}`;
-
-  // 이미 있으면 스킵
-  if (document.getElementById(panelId)) return;
-
-  const panel = document.createElement('div');
-  panel.className = 'run-panel';
-  panel.id = panelId;
-  panel.innerHTML = `
-    <div class="run-panel-header">
-      <span class="run-panel-title">
-        <span class="running-dot" id="dot-${run.run_id}"></span>
-        ${escapeHtml(run.job_name)}
-      </span>
-      <span class="run-panel-meta" id="meta-${run.run_id}">
-        PID: ${run.pid} | 시작: ${formatTime(run.started_at)}
-      </span>
-      <div class="run-panel-actions">
-        ${statusBadge(run.status)}
-        <button class="btn btn-danger btn-sm kill-btn" data-run="${run.run_id}">⏹ 종료</button>
-        <button class="btn btn-ghost btn-sm close-btn" data-panel="${panelId}">✕</button>
-      </div>
+  el.innerHTML = procs.map(([runId, p]) => `
+    <div class="proc-chip ${State.activeRunId === runId ? 'ring-1 ring-blue-500' : ''}"
+         onclick="App.attachLog('${runId}')">
+      <span class="log-dot"></span>
+      <span class="text-blue-300">${runId.slice(0, 8)}</span>
+      <span class="text-gray-400">PID ${p.pid}</span>
+      <span class="text-gray-500">${elapsed(p.started_at)}</span>
+      <span class="kill-btn" onclick="event.stopPropagation(); App.killProcess('${runId}')">✕</span>
     </div>
-    <pre class="log-box" id="log-${run.run_id}"></pre>
-    <div class="log-toolbar">
-      <span id="logCount-${run.run_id}">0줄</span>
-      <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
-        <input type="checkbox" id="autoScroll-${run.run_id}" checked />
-        자동 스크롤
-      </label>
-    </div>
-  `;
-  panels.prepend(panel);
-
-  // 종료 버튼
-  panel.querySelector('.kill-btn').addEventListener('click', async () => {
-    await killRun(run.run_id);
-  });
-
-  // 패널 닫기
-  panel.querySelector('.close-btn').addEventListener('click', () => {
-    if (activeWs[run.run_id]) {
-      activeWs[run.run_id].close();
-      delete activeWs[run.run_id];
-    }
-    panel.remove();
-    if (!$('#runPanels .run-panel')) {
-      $('#runPanels').innerHTML = `
-        <div class="empty-state-main">
-          <div class="empty-icon">▶</div>
-          <p>왼쪽에서 Job을 선택하고 <strong>실행</strong> 버튼을 누르세요</p>
-        </div>`;
-    }
-  });
-
-  connectWebSocket(run.run_id, panel);
-  updateActiveBadge();
+  `).join('');
 }
 
-function connectWebSocket(runId, panel) {
-  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-  const ws = new WebSocket(`${proto}://${location.host}/ws/logs/${runId}`);
-  activeWs[runId] = ws;
+// ─── Log Viewer ───────────────────────────────────────────────────
+function appendLog(text, cls = '') {
+  const el = document.getElementById('log-viewer');
+  if (!el) return;
+  const now = new Date().toLocaleTimeString('ko-KR', { hour12: false });
+  const line = document.createElement('div');
+  line.className = `log-line ${cls}`;
+  line.innerHTML = `<span class="log-ts">${now}</span>${escapeHtml(String(text))}`;
+  el.appendChild(line);
+  if (State.autoScroll) el.scrollTop = el.scrollHeight;
+}
 
-  const logEl    = $(`#log-${runId}`);
-  const countEl  = $(`#logCount-${runId}`);
-  const dotEl    = $(`#dot-${runId}`);
-  let lineCount  = 0;
+function clearLog() {
+  const el = document.getElementById('log-viewer');
+  if (el) el.innerHTML = '';
+  State.activeRunId = null;
+  const rid = document.getElementById('log-run-id');
+  if (rid) rid.textContent = '';
+  const badge = document.getElementById('log-status-badge');
+  if (badge) badge.className = 'hidden';
+}
 
-  ws.onmessage = (e) => {
-    const msg = JSON.parse(e.data);
+function setLogStatus(status) {
+  const el = document.getElementById('log-status-badge');
+  if (!el) return;
+  el.className = '';
+  el.innerHTML = statusBadge(status);
+}
 
+function attachLog(runId) {
+  if (State.ws) { State.ws.close(); State.ws = null; }
+
+  State.activeRunId = runId;
+  clearLog();
+  const ridEl = document.getElementById('log-run-id');
+  if (ridEl) ridEl.textContent = `run: ${runId.slice(0, 8)}...`;
+  setLogStatus('RUNNING');
+
+  const ws = new WebSocket(API.wsUrl(`/ws/logs/${runId}`));
+  State.ws = ws;
+
+  ws.onopen = () => appendLog('WebSocket 연결됨', 'system');
+
+  ws.onmessage = (ev) => {
+    const msg = JSON.parse(ev.data);
     if (msg.type === 'log') {
-      lineCount++;
-      const span = document.createElement('span');
-      span.className = 'log-line';
-      span.textContent = msg.line;
-      logEl.appendChild(span);
-      logEl.appendChild(document.createTextNode('\n'));
-
-      const autoScroll = $(`#autoScroll-${runId}`);
-      if (autoScroll?.checked) logEl.scrollTop = logEl.scrollHeight;
-      if (countEl) countEl.textContent = `${lineCount}줄`;
-
+      appendLog(msg.line);
     } else if (msg.type === 'done') {
-      const status = msg.status || 'COMPLETED';
-      // 상태 배지 교체
-      const header = panel.querySelector('.run-panel-actions');
-      const badge  = header.querySelector('.status-badge');
-      if (badge) badge.outerHTML = statusBadge(status);
-      // 점 애니메이션 종료
-      if (dotEl) { dotEl.style.animation = 'none'; dotEl.style.background = statusColor(status); }
-      // kill 버튼 비활성화
-      const killBtn = panel.querySelector('.kill-btn');
-      if (killBtn) killBtn.disabled = true;
-
-      appendLogLine(logEl, `\n[${status}] 프로세스 종료${msg.exit_code !== undefined && msg.exit_code !== null ? ` (exit: ${msg.exit_code})` : ''}`, '#94a3b8');
-      lineCount++;
-      if (countEl) countEl.textContent = `${lineCount}줄`;
-
-      delete activeWs[runId];
-      updateActiveBadge();
-      // 이력 자동 새로고침 (이력 탭에 있을 때)
-      if ($('#tabHistory').classList.contains('active')) loadHistory();
-    } else if (msg.type === 'ping') {
-      // heartbeat — ignore
+      setLogStatus(msg.status || 'COMPLETED');
+      appendLog(`--- 종료: ${msg.status || 'COMPLETED'} ---`, 'system');
+      ws.close();
+      pollProcesses();
+      loadHistory(true);
+    } else if (msg.type === 'error') {
+      appendLog(`에러: ${msg.message}`, 'stderr');
     }
   };
 
-  ws.onerror = () => appendLogLine(logEl, '[WebSocket 오류]', '#f87171');
-  ws.onclose = () => { delete activeWs[runId]; updateActiveBadge(); };
+  ws.onerror = () => appendLog('WebSocket 오류', 'stderr');
+  ws.onclose = () => appendLog('WebSocket 연결 종료', 'system');
+
+  renderActiveProcesses();
 }
 
-function appendLogLine(el, text, color) {
-  const span = document.createElement('span');
-  span.className = 'log-line';
-  span.style.color = color || '';
-  span.textContent = text;
-  el.appendChild(span);
-  el.appendChild(document.createTextNode('\n'));
-  el.scrollTop = el.scrollHeight;
+function toggleAutoScroll() {
+  State.autoScroll = !State.autoScroll;
+  const btn = document.getElementById('btn-autoscroll');
+  if (btn) {
+    btn.textContent = `↓ 자동스크롤 ${State.autoScroll ? 'ON' : 'OFF'}`;
+  }
 }
 
-function statusColor(status) {
-  return { COMPLETED: '#22c55e', FAILED: '#ef4444', KILLED: '#f59e0b' }[status] || '#6b7280';
+// ─── Run Modal ────────────────────────────────────────────────────
+function openRunModal() {
+  if (!State.selectedJob) return;
+  const job = State.selectedJob;
+
+  const nameEl = document.getElementById('modal-job-name');
+  if (nameEl) nameEl.textContent = `Job: ${job.name}`;
+
+  const paramsEl = document.getElementById('modal-params');
+  if (!paramsEl) return;
+
+  if (!job.params || !job.params.length) {
+    paramsEl.innerHTML = '<p class="text-gray-500 text-sm">이 Job은 파라미터가 없습니다.</p>';
+  } else {
+    paramsEl.innerHTML = job.params.map(p => `
+      <div>
+        <label class="param-label">${escapeHtml(p.label || p.name)}
+          <span class="text-gray-600">(${p.type})</span>
+        </label>
+        ${p.type === 'bool'
+          ? `<select id="param-${p.name}" class="param-input">
+               <option value="false" ${!p.default ? 'selected' : ''}>False</option>
+               <option value="true"  ${p.default  ? 'selected' : ''}>True</option>
+             </select>`
+          : `<input id="param-${p.name}" type="${p.type === 'int' || p.type === 'float' ? 'number' : 'text'}"
+               class="param-input" value="${p.default ?? ''}"
+               placeholder="${p.default ?? ''}" />`
+        }
+      </div>
+    `).join('');
+  }
+
+  const modal = document.getElementById('run-modal');
+  if (modal) modal.classList.remove('hidden');
 }
 
-async function killRun(runId) {
+function closeRunModal() {
+  const modal = document.getElementById('run-modal');
+  if (modal) modal.classList.add('hidden');
+}
+
+async function submitRun() {
+  const job = State.selectedJob;
+  if (!job) return;
+
+  const params = {};
+  (job.params || []).forEach(p => {
+    const el = document.getElementById(`param-${p.name}`);
+    if (!el) return;
+    let val = el.value;
+    if (p.type === 'int')   val = parseInt(val, 10);
+    if (p.type === 'float') val = parseFloat(val);
+    if (p.type === 'bool')  val = val === 'true';
+    params[p.name] = val;
+  });
+
+  closeRunModal();
+
   try {
-    await apiFetch(`/api/processes/${runId}`, { method: 'DELETE' });
-    toast('⏹ 강제 종료 요청 완료', 'success');
+    const run = await API.post(`/api/jobs/${job.id}/run`, { params });
+    toast(`▶ 실행 시작: ${run.run_id.slice(0,8)}`, 'success');
+    State.activeProcesses[run.run_id] = {
+      job_id: run.job_id, job_name: run.job_name,
+      pid: run.pid, started_at: run.started_at,
+    };
+    renderActiveProcesses();
+    renderJobList();
+    attachLog(run.run_id);
+    updateActiveBadge();
   } catch (e) {
-    toast(`❌ 종료 실패: ${e.message}`, 'error');
+    toast('실행 실패: ' + e.message, 'error');
   }
 }
 
-function updateActiveBadge() {
-  const count = Object.keys(activeWs).length;
-  const badge = $('#activeBadge');
-  badge.textContent = `● ${count}개 실행 중`;
-  badge.className = count > 0 ? 'active-badge' : 'active-badge idle';
-}
-
-// ══════════════════════════════════════════════
-//  History Tab
-// ══════════════════════════════════════════════
-
-async function loadHistory(page = 1) {
-  historyPage = page;
-  const jobId  = $('#historyJobFilter').value;
-  const status = $('#historyStatusFilter').value;
-
-  let url = `/api/history?page=${page}&size=20`;
-  if (jobId)  url += `&job_id=${jobId}`;
-  if (status) url += `&status=${status}`;
-
+// ─── Kill ─────────────────────────────────────────────────────────
+async function killProcess(runId) {
+  if (!confirm(`run_id ${runId.slice(0,8)}... 을(를) 강제 종료하시겠습니까?`)) return;
   try {
-    const data = await apiFetch(url);
-    renderHistoryTable(data);
+    await API.delete(`/api/processes/${runId}`);
+    toast(`⬛ 강제 종료: ${runId.slice(0,8)}`, 'info');
+    delete State.activeProcesses[runId];
+    renderActiveProcesses();
+    renderJobList();
+    updateActiveBadge();
+    loadHistory(true);
   } catch (e) {
-    $('#historyTable').innerHTML = `<div class="empty-state">❌ 이력 로드 실패: ${e.message}</div>`;
+    toast('종료 실패: ' + e.message, 'error');
   }
 }
 
-function renderHistoryTable(data) {
-  if (!data.items.length) {
-    $('#historyTable').innerHTML = '<div class="empty-state">실행 이력이 없습니다.</div>';
-    $('#historyPager').innerHTML = '';
-    return;
-  }
-
-  $('#historyTable').innerHTML = `
-    <table class="history-table">
-      <thead>
-        <tr>
-          <th>Job 이름</th>
-          <th>상태</th>
-          <th>시작 시간</th>
-          <th>소요 시간</th>
-          <th>종료 코드</th>
-          <th>액션</th>
-        </tr>
-      </thead>
-      <tbody>
-        ${data.items.map(r => `
-          <tr>
-            <td>${escapeHtml(r.job_name)}</td>
-            <td>${statusBadge(r.status)}</td>
-            <td>${formatTime(r.started_at)}</td>
-            <td>${formatDuration(r.started_at, r.finished_at)}</td>
-            <td>${r.exit_code !== null ? r.exit_code : '-'}</td>
-            <td>
-              <button class="btn btn-ghost btn-sm view-log-btn" data-run="${r.id}" data-name="${escapeHtml(r.job_name)}">📄 로그</button>
-              <button class="btn btn-ghost btn-sm del-btn" data-run="${r.id}" style="color:#ef4444">🗑</button>
-            </td>
-          </tr>
-        `).join('')}
-      </tbody>
-    </table>`;
-
-  // 로그 보기
-  $$('.view-log-btn').forEach(btn =>
-    btn.addEventListener('click', () => openLogModal(btn.dataset.run, btn.dataset.name))
-  );
-  // 삭제
-  $$('.del-btn').forEach(btn =>
-    btn.addEventListener('click', async () => {
-      if (!confirm('이 이력을 삭제하시겠습니까?')) return;
-      try {
-        await apiFetch(`/api/history/${btn.dataset.run}`, { method: 'DELETE' });
-        toast('삭제되었습니다.', 'success');
-        loadHistory(historyPage);
-      } catch (e) { toast(`❌ ${e.message}`, 'error'); }
-    })
-  );
-
-  // 페이저
-  const pager = $('#historyPager');
-  if (data.pages <= 1) { pager.innerHTML = ''; return; }
-  pager.innerHTML = `
-    <button class="btn btn-ghost btn-sm" ${data.page<=1?'disabled':''} onclick="loadHistory(${data.page-1})">◀</button>
-    <span class="text-muted text-sm">${data.page} / ${data.pages}  (총 ${data.total}건)</span>
-    <button class="btn btn-ghost btn-sm" ${data.page>=data.pages?'disabled':''} onclick="loadHistory(${data.page+1})">▶</button>`;
-}
-
-async function openLogModal(runId, jobName) {
-  $('#logModalTitle').textContent = `📄 로그 — ${jobName}`;
-  $('#logModalContent').textContent = '로그를 불러오는 중...';
-  $('#logModal').classList.remove('hidden');
+// ─── Process Polling ──────────────────────────────────────────────
+async function pollProcesses() {
   try {
-    const data = await apiFetch(`/api/history/${runId}`);
-    $('#logModalContent').textContent = data.log_output || '(로그 없음)';
-  } catch (e) {
-    $('#logModalContent').textContent = `오류: ${e.message}`;
-  }
-}
-
-// ══════════════════════════════════════════════
-//  Tab switching
-// ══════════════════════════════════════════════
-
-function switchTab(name) {
-  $$('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
-  $$('.tab-content').forEach(c => c.classList.toggle('active', c.id === `tab${name.charAt(0).toUpperCase()+name.slice(1)}`));
-  if (name === 'history') loadHistory(historyPage);
-}
-
-// ══════════════════════════════════════════════
-//  Active run polling (헤더 배지 갱신용)
-// ══════════════════════════════════════════════
-
-async function pollActiveRuns() {
-  try {
-    const data = await apiFetch('/api/processes');
-    // WebSocket이 없는 RUNNING run은 패널 복원
-    // (새로고침 후 실행 중인 것들을 보여줌)
-    data.processes.forEach(run => {
-      const panelId = `panel-${run.id}`;
-      if (!document.getElementById(panelId)) {
-        openRunPanel({ run_id: run.id, job_name: run.job_name,
-                       pid: run.pid, status: run.status, started_at: run.started_at });
-      }
+    const data = await API.get('/api/processes');
+    const newMap = {};
+    data.processes.forEach(p => {
+      newMap[p.id] = { job_id: p.job_id, job_name: p.job_name,
+                       pid: p.pid, started_at: p.started_at };
     });
+    State.activeProcesses = newMap;
+    renderActiveProcesses();
+    renderJobList();
+    updateActiveBadge();
   } catch (_) {}
 }
 
-// ══════════════════════════════════════════════
-//  Init
-// ══════════════════════════════════════════════
+function updateActiveBadge() {
+  const count = Object.keys(State.activeProcesses).length;
+  const dot   = document.querySelector('#active-badge span:first-child');
+  const countEl = document.getElementById('active-count');
+  if (countEl) countEl.textContent = `${count}개 실행 중`;
+  if (dot) dot.className = `w-2 h-2 rounded-full ${count > 0 ? 'bg-green-400 animate-pulse' : 'bg-gray-600'}`;
+}
 
-document.addEventListener('DOMContentLoaded', () => {
-  loadJobs();
-  pollActiveRuns();
+// ─── History ──────────────────────────────────────────────────────
+async function loadHistory(reset = true) {
+  if (reset) State.historyPage = 1;
+  const jobFilter = State.selectedJob ? `&job_id=${State.selectedJob.id}` : '';
+  try {
+    const data = await API.get(`/api/history?page=${State.historyPage}&size=20${jobFilter}`);
+    renderHistory(data.items, reset);
+    State.historyHasMore = State.historyPage < data.pages;
+    const moreBtn = document.getElementById('history-more-btn');
+    if (moreBtn) moreBtn.classList.toggle('hidden', !State.historyHasMore);
+  } catch (e) {
+    toast('이력 로드 실패: ' + e.message, 'error');
+  }
+}
 
-  // 탭
-  $$('.tab').forEach(t => t.addEventListener('click', () => switchTab(t.dataset.tab)));
+async function loadMoreHistory() {
+  State.historyPage++;
+  await loadHistory(false);
+}
 
-  // Job 새로고침
-  $('#refreshJobsBtn').addEventListener('click', loadJobs);
+function renderHistory(items, reset) {
+  const el = document.getElementById('history-list');
+  if (!el) return;
+  if (reset) el.innerHTML = '';
 
-  // 모달 닫기
-  $('#modalClose').addEventListener('click', closeRunModal);
-  $('#modalCancel').addEventListener('click', closeRunModal);
-  $('#runModal').addEventListener('click', e => { if (e.target === e.currentTarget) closeRunModal(); });
+  if (!items.length && reset) {
+    el.innerHTML = '<p class="text-gray-600 text-xs px-2 py-4 text-center">이력 없음</p>';
+    return;
+  }
 
-  // 로그 모달 닫기
-  $('#logModalClose').addEventListener('click', () => $('#logModal').classList.add('hidden'));
-  $('#logModal').addEventListener('click', e => { if (e.target === e.currentTarget) $('#logModal').classList.add('hidden'); });
+  items.forEach(item => {
+    const div = document.createElement('div');
+    div.className = 'history-item';
+    div.innerHTML = `
+      <div class="flex items-center justify-between gap-1">
+        <span class="text-xs font-semibold text-gray-300 truncate flex-1">${escapeHtml(item.job_name)}</span>
+        ${statusBadge(item.status)}
+      </div>
+      <div class="flex items-center justify-between mt-1">
+        <span class="text-xs text-gray-600">${fmtTime(item.started_at)}</span>
+        <div class="flex gap-1.5">
+          <button onclick="App.showLogModal('${item.id}')"
+            class="text-xs text-blue-400 hover:text-blue-300 transition">로그</button>
+          <button onclick="App.deleteHistory('${item.id}', this)"
+            class="text-xs text-red-500 hover:text-red-400 transition">삭제</button>
+        </div>
+      </div>
+    `;
+    el.appendChild(div);
+  });
+}
 
-  // 이력 검색
-  $('#historySearchBtn').addEventListener('click', () => loadHistory(1));
-  $('#historyRefreshBtn').addEventListener('click', () => loadHistory(historyPage));
+async function showLogModal(runId) {
+  const modal = document.getElementById('log-modal');
+  if (modal) modal.classList.remove('hidden');
+  const logEl = document.getElementById('lm-log');
+  const titleEl = document.getElementById('lm-title');
+  const metaEl = document.getElementById('lm-meta');
+  if (logEl) logEl.textContent = '로딩 중...';
+  if (titleEl) titleEl.textContent = '실행 로그';
+  if (metaEl) metaEl.textContent = '';
 
-  // 주기적 갱신
-  setInterval(pollActiveRuns, 5000);
-});
+  try {
+    const data = await API.get(`/api/history/${runId}`);
+    if (titleEl) titleEl.textContent = data.job_name;
+    if (metaEl) metaEl.textContent =
+      `run_id: ${runId.slice(0,8)} | 상태: ${data.status} | 시작: ${fmtTime(data.started_at)}`;
+    if (logEl) logEl.textContent = data.log_output || '(로그 없음)';
+  } catch (e) {
+    if (logEl) logEl.textContent = '로그 로드 실패: ' + e.message;
+  }
+}
+
+function closeLogModal() {
+  const modal = document.getElementById('log-modal');
+  if (modal) modal.classList.add('hidden');
+}
+
+async function deleteHistory(runId, btn) {
+  if (!confirm('이 실행 이력을 삭제하시겠습니까?')) return;
+  try {
+    await API.delete(`/api/history/${runId}`);
+    btn.closest('.history-item').remove();
+    toast('이력 삭제 완료', 'info');
+  } catch (e) {
+    toast('삭제 실패: ' + e.message, 'error');
+  }
+}
+
+// ─── Filters ──────────────────────────────────────────────────────
+function filterTag(tag) {
+  State.activeTag = tag;
+  renderTagFilters();
+  renderJobList();
+}
+
+// ─── Refresh All ──────────────────────────────────────────────────
+async function refreshAll() {
+  await loadJobs();
+  await pollProcesses();
+  await loadHistory(true);
+  toast('새로고침 완료', 'info');
+}
+
+// ─── App entry point ──────────────────────────────────────────────
+window.App = {
+  selectJob, openRunModal, closeRunModal, submitRun,
+  killProcess, attachLog, clearLog, toggleAutoScroll,
+  loadHistory, loadMoreHistory, showLogModal, closeLogModal, deleteHistory,
+  filterTag, refreshAll, pollProcesses,
+};
+
+(async () => {
+  await loadJobs();
+  await pollProcesses();
+  await loadHistory(true);
+
+  // 5초마다 프로세스 폴링
+  setInterval(pollProcesses, 5000);
+  // 30초마다 이력 갱신
+  setInterval(() => loadHistory(true), 30000);
+})();
