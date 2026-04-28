@@ -2,7 +2,9 @@
 <html lang="ko">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="mobile-web-app-capable" content="yes" />
   <title>🐍 Python Remote Executor</title>
   <link rel="stylesheet" href="/static/styles.css" />
 </head>
@@ -11,26 +13,47 @@
 <!-- ── HEADER ─────────────────────────────────────────────────── -->
 <header class="header">
   <div class="header-left">
+    <!-- 모바일: 햄버거 메뉴 -->
+    <button class="hamburger" id="hamburgerBtn" onclick="App.toggleDrawer()" aria-label="메뉴">
+      <span></span><span></span><span></span>
+    </button>
     <span class="logo-icon">🐍</span>
-    <span class="logo-text">Python Remote Executor</span>
-    <span class="logo-sep"></span>
-    <span class="logo-sub">원격 실행 플랫폼</span>
+    <span class="logo-text">Python RE</span>
+    <span class="logo-sep hide-mobile"></span>
+    <span class="logo-sub hide-mobile">원격 실행 플랫폼</span>
   </div>
   <div class="header-right">
     <span id="active-badge" class="active-badge">
       <span class="badge-dot dot-idle"></span>
       <span id="active-count">0개 실행 중</span>
     </span>
-    <button onclick="App.refreshAll()" class="btn btn-ghost btn-sm">↺ 새로고침</button>
-    <a href="/docs" target="_blank" class="btn btn-ghost btn-sm">API 문서 ↗</a>
+    <button onclick="App.refreshAll()" class="btn btn-ghost btn-sm hide-mobile">↺ 새로고침</button>
+    <a href="/docs" target="_blank" class="btn btn-ghost btn-sm hide-mobile">API 문서 ↗</a>
   </div>
 </header>
+
+<!-- ── 모바일 드로어 오버레이 ──────────────────────────────────── -->
+<div class="drawer-overlay" id="drawerOverlay" onclick="App.closeDrawer()"></div>
+
+<!-- ── 모바일 드로어 (Job 목록) ──────────────────────────────── -->
+<div class="drawer" id="drawer">
+  <div class="drawer-header">
+    <span class="sidebar-title">Job 목록</span>
+    <button class="modal-close" onclick="App.closeDrawer()">✕</button>
+  </div>
+  <div class="sidebar-tags">
+    <div id="tag-filters-drawer"></div>
+  </div>
+  <div id="job-list-drawer" class="job-list">
+    <p class="empty-small">로딩 중...</p>
+  </div>
+</div>
 
 <!-- ── MAIN LAYOUT ───────────────────────────────────────────── -->
 <div class="layout">
 
-  <!-- LEFT: Job 목록 -->
-  <aside class="sidebar">
+  <!-- LEFT: Job 목록 (데스크탑) -->
+  <aside class="sidebar" id="desktopSidebar">
     <div class="sidebar-header">
       <span class="sidebar-title">Job 목록</span>
       <span id="job-count" class="sidebar-count">0개</span>
@@ -44,14 +67,19 @@
   </aside>
 
   <!-- CENTER: 실행 뷰 -->
-  <main class="center-main">
+  <main class="center-main" id="centerMain">
 
     <!-- Welcome -->
     <div id="welcome-view" class="welcome-view">
       <div class="welcome-inner">
         <div class="welcome-icon">🐍</div>
         <p class="welcome-title">Job을 선택하세요</p>
-        <p class="welcome-desc">왼쪽 목록에서 실행할 Job을 클릭하면<br/>여기에 실행 패널이 표시됩니다.</p>
+        <p class="welcome-desc hide-mobile">왼쪽 목록에서 실행할 Job을 클릭하면<br/>여기에 실행 패널이 표시됩니다.</p>
+        <p class="welcome-desc show-mobile">하단 <strong>Jobs</strong> 탭에서 실행할 Job을 선택하세요.</p>
+        <!-- 모바일 전용 빠른 실행 버튼 -->
+        <button class="btn btn-primary mt-16 show-mobile" onclick="App.switchTab('jobs')">
+          📋 Job 목록 보기
+        </button>
       </div>
     </div>
 
@@ -62,8 +90,10 @@
       <div class="jv-header">
         <div class="jv-info">
           <div class="jv-name-row">
+            <!-- 모바일: 뒤로가기 -->
+            <button class="back-btn show-mobile" onclick="App.switchTab('jobs')" title="Job 목록으로">←</button>
             <span id="jv-name" class="jv-name"></span>
-            <span id="jv-tags" class="jv-tags"></span>
+            <span id="jv-tags" class="jv-tags hide-mobile"></span>
           </div>
           <p id="jv-desc" class="jv-desc"></p>
         </div>
@@ -82,11 +112,11 @@
         <div class="log-toolbar">
           <div class="log-toolbar-left">
             <span class="log-label">실행 로그</span>
-            <span id="log-run-id" class="log-run-id"></span>
+            <span id="log-run-id" class="log-run-id hide-mobile"></span>
             <span id="log-status-badge" class="hidden"></span>
           </div>
           <div class="log-toolbar-right">
-            <button id="btn-autoscroll" onclick="App.toggleAutoScroll()" class="btn btn-ghost btn-xs">
+            <button id="btn-autoscroll" onclick="App.toggleAutoScroll()" class="btn btn-ghost btn-xs hide-mobile">
               ↓ 자동스크롤 ON
             </button>
             <button onclick="App.clearLog()" class="btn btn-ghost btn-xs">지우기</button>
@@ -99,8 +129,8 @@
     </div>
   </main>
 
-  <!-- RIGHT: 실행 이력 -->
-  <aside class="history-sidebar">
+  <!-- RIGHT: 실행 이력 (데스크탑) -->
+  <aside class="history-sidebar" id="desktopHistory">
     <div class="sidebar-header">
       <span class="sidebar-title">실행 이력</span>
       <button onclick="App.loadHistory()" class="icon-btn">↺</button>
@@ -114,6 +144,53 @@
       </button>
     </div>
   </aside>
+</div>
+
+<!-- ── 모바일 하단 탭바 ───────────────────────────────────────── -->
+<nav class="mobile-tabbar" id="mobileTabbar">
+  <button class="tabbar-item active" data-tab="jobs" onclick="App.switchTab('jobs')">
+    <span class="tabbar-icon">📋</span>
+    <span class="tabbar-label">Jobs</span>
+  </button>
+  <button class="tabbar-item" data-tab="monitor" onclick="App.switchTab('monitor')">
+    <span class="tabbar-icon">▶</span>
+    <span class="tabbar-label">모니터</span>
+  </button>
+  <button class="tabbar-item" data-tab="history" onclick="App.switchTab('history')">
+    <span class="tabbar-icon">📜</span>
+    <span class="tabbar-label">이력</span>
+    <span class="tabbar-badge hidden" id="historyBadge"></span>
+  </button>
+</nav>
+
+<!-- ── 모바일 Job 목록 패널 ──────────────────────────────────── -->
+<div class="mobile-panel hidden" id="mobileJobs">
+  <div class="mobile-panel-header">
+    <span class="sidebar-title">Job 목록</span>
+    <span id="job-count-mobile" class="sidebar-count">0개</span>
+  </div>
+  <div class="sidebar-tags" style="padding: 10px 12px; border-bottom: 1px solid var(--border);">
+    <div id="tag-filters-mobile"></div>
+  </div>
+  <div id="job-list-mobile" class="job-list" style="flex:1; overflow-y:auto; padding: 8px;">
+    <p class="empty-small">로딩 중...</p>
+  </div>
+</div>
+
+<!-- ── 모바일 이력 패널 ──────────────────────────────────────── -->
+<div class="mobile-panel hidden" id="mobileHistory">
+  <div class="mobile-panel-header">
+    <span class="sidebar-title">실행 이력</span>
+    <button onclick="App.loadHistory()" class="icon-btn">↺</button>
+  </div>
+  <div id="history-list-mobile" class="history-list" style="flex:1; overflow-y:auto; padding:8px;">
+    <p class="empty-small">이력 없음</p>
+  </div>
+  <div class="history-footer">
+    <button id="history-more-btn-mobile" onclick="App.loadMoreHistory()" class="btn btn-ghost btn-sm hidden">
+      더 보기
+    </button>
+  </div>
 </div>
 
 <!-- ── RUN MODAL ─────────────────────────────────────────────── -->
