@@ -711,64 +711,8 @@ a { text-decoration: none; }
 .hide-mobile-flex { display: flex; }        /* flex 요소 기본 */
 
 /* ══════════════════════════════════════════════════
-   햄버거 버튼 (모바일 헤더)
+   (구) 햄버거/드로어 — 현재 미사용, 슬롯 예약만
    ══════════════════════════════════════════════════ */
-.hamburger {
-  display: none;
-  flex-direction: column;
-  justify-content: center;
-  gap: 5px;
-  width: 36px; height: 36px;
-  padding: 6px;
-  background: none;
-  border: none;
-  border-radius: var(--radius-sm);
-  cursor: pointer;
-  transition: background 0.15s;
-  flex-shrink: 0;
-}
-.hamburger:hover { background: var(--bg-hover); }
-.hamburger span {
-  display: block;
-  width: 100%; height: 2px;
-  background: var(--text2);
-  border-radius: 2px;
-  transition: all 0.2s;
-}
-
-/* ══════════════════════════════════════════════════
-   모바일 드로어 (슬라이드 사이드바)
-   ══════════════════════════════════════════════════ */
-.drawer-overlay {
-  display: none;
-  position: fixed; inset: 0;
-  background: rgba(15,23,42,0.4);
-  z-index: 200;
-  backdrop-filter: blur(2px);
-}
-.drawer-overlay.open { display: block; }
-
-.drawer {
-  position: fixed;
-  top: 0; left: 0; bottom: 0;
-  width: 300px;
-  background: var(--bg-card);
-  border-right: 1px solid var(--border);
-  box-shadow: var(--shadow-lg);
-  z-index: 201;
-  display: flex;
-  flex-direction: column;
-  transform: translateX(-100%);
-  transition: transform 0.28s cubic-bezier(0.4, 0, 0.2, 1);
-}
-.drawer.open { transform: translateX(0); }
-
-.drawer-header {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 16px;
-  border-bottom: 1px solid var(--border);
-  flex-shrink: 0;
-}
 
 /* ══════════════════════════════════════════════════
    모바일 하단 탭바
@@ -825,18 +769,24 @@ a { text-decoration: none; }
    모바일 전체화면 패널
    ══════════════════════════════════════════════════ */
 .mobile-panel {
-  display: none;                        /* 데스크탑에서 숨김 */
+  display: none;                        /* 데스크탑에서 숨김, 모바일도 기본 숨김 */
   position: fixed;
-  top: 56px;                            /* 헤더 아래 */
+  top: 56px;                            /* 헤더(56px) 아래 — 데스크탑 기준 */
   left: 0; right: 0;
-  bottom: 62px;                         /* 탭바 위 */
+  bottom: 62px;                         /* 탭바(62px) 위 */
   background: var(--bg-page);
   z-index: 50;
   flex-direction: column;
   overflow: hidden;
 }
-.mobile-panel.active {
-  display: flex;
+/* 모바일(767px 이하)에서만 active 클래스로 표시 */
+@media (max-width: 767px) {
+  .mobile-panel {
+    top: 52px;                          /* 모바일 헤더는 52px */
+  }
+  .mobile-panel.active {
+    display: flex;
+  }
 }
 
 .mobile-panel-header {
@@ -881,7 +831,6 @@ a { text-decoration: none; }
   /* 헤더 */
   .header { padding: 0 14px; height: 52px; }
   .logo-text { font-size: 14px; }
-  .hamburger { display: flex; }
 
   /* 유틸 가시성 토글 */
   .show-mobile { display: flex !important; }
@@ -889,20 +838,10 @@ a { text-decoration: none; }
   .hide-mobile { display: none !important; }
   .hide-mobile-flex { display: none !important; }
 
-  /* 데스크탑 레이아웃 → 전부 숨기고 모바일 패널로 대체 */
-  .layout {
-    /* 헤더(52px) + 탭바(62px) */
-    height: calc(100vh - 52px - 62px);
-  }
-  .sidebar         { display: none; }
-  .history-sidebar { display: none; }
-
-  /* center-main: 모바일에서 monitor 탭 콘텐츠 역할 */
-  .center-main {
-    width: 100%;
-    /* 고정 높이를 명시해 내부 flex가 overflow 없이 동작 */
-    height: 100%;
-  }
+  /* ──────────────────────────────────────────────
+     데스크탑 레이아웃 완전 숨김 → 모바일 패널로 대체
+     ────────────────────────────────────────────── */
+  .layout { display: none !important; }
 
   /* 모바일 하단 탭바 보임 */
   .mobile-tabbar { display: flex; }

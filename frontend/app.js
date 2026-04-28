@@ -1,5 +1,5 @@
 /**
- * Python Remote Executor — Frontend App
+ * Remote Controller — Frontend App
  * Vanilla JS, no build step required.
  */
 
@@ -35,11 +35,17 @@ const State = {
   jobs: [],
   selectedJob: null,
   activeTag: 'all',
+  // 데스크탑 WebSocket + run
   activeRunId: null,
   autoScroll: true,
+  ws: null,
+  // 모바일 WebSocket + run
+  mActiveRunId: null,
+  mAutoScroll: true,
+  mWs: null,
+  // 공용
   historyPage: 1,
   historyHasMore: false,
-  ws: null,
   activeProcesses: {},   // { run_id: {job_id, job_name, pid, started_at} }
   mobileTab: 'jobs',     // 'jobs' | 'monitor' | 'history'
 };
@@ -83,50 +89,28 @@ function toast(msg, type = 'info') {
 
 // ─── 모바일 탭 전환 ───────────────────────────────────────────────
 function switchTab(tab) {
-  if (!isMobile()) return;
   State.mobileTab = tab;
 
-  // 탭바 active
+  // 탭바 active 표시
   document.querySelectorAll('.tabbar-item').forEach(btn => {
     btn.classList.toggle('active', btn.dataset.tab === tab);
   });
 
-  // 패널 표시
-  const jobsPanel    = $('mobileJobs');
-  const historyPanel = $('mobileHistory');
-  const centerMain   = $('centerMain');
+  // 모든 모바일 패널 숨기기
+  ['mobileJobs', 'mobileMonitor', 'mobileHistory'].forEach(id => {
+    const el = $(id);
+    if (el) el.classList.remove('active');
+  });
 
-  jobsPanel.classList.remove('active');
-  historyPanel.classList.remove('active');
-  centerMain.style.display = '';
-
+  // 선택된 탭 패널 표시
   if (tab === 'jobs') {
-    jobsPanel.classList.add('active');
-  } else if (tab === 'history') {
-    historyPanel.classList.add('active');
-    loadHistory(true);           // 탭 전환 시 최신화
-    syncHistoryMobile();
+    $('mobileJobs').classList.add('active');
   } else if (tab === 'monitor') {
-    // centerMain을 그대로 보여줌 (layout 안에 있으므로 mobile에서도 표시)
-    // layout이 숨겨지지 않도록 center-main만 직접 표시
-    centerMain.style.display = 'flex';
+    $('mobileMonitor').classList.add('active');
+  } else if (tab === 'history') {
+    $('mobileHistory').classList.add('active');
+    loadHistory(true);
   }
-}
-
-// ─── 모바일 드로어 ────────────────────────────────────────────────
-function toggleDrawer() {
-  const drawer  = $('drawer');
-  const overlay = $('drawerOverlay');
-  const isOpen  = drawer.classList.contains('open');
-  if (isOpen) closeDrawer();
-  else {
-    drawer.classList.add('open');
-    overlay.classList.add('open');
-  }
-}
-function closeDrawer() {
-  $('drawer').classList.remove('open');
-  $('drawerOverlay').classList.remove('open');
 }
 
 // ─── Job List ─────────────────────────────────────────────────────
@@ -136,9 +120,8 @@ async function loadJobs() {
     State.jobs = data.jobs;
     renderTagFilters();
     renderJobList();
-    // 카운트: 데스크탑 + 모바일
     const cnt = `${data.total}개`;
-    if ($('job-count')) $('job-count').textContent = cnt;
+    if ($('job-count'))        $('job-count').textContent = cnt;
     if ($('job-count-mobile')) $('job-count-mobile').textContent = cnt;
   } catch (e) {
     toast('Job 목록 로드 실패: ' + e.message, 'error');
@@ -157,9 +140,8 @@ function _tagHtml(containerId) {
 }
 
 function renderTagFilters() {
-  _tagHtml('tag-filters');          // 데스크탑 사이드바
-  _tagHtml('tag-filters-mobile');   // 모바일 패널
-  _tagHtml('tag-filters-drawer');   // 드로어
+  _tagHtml('tag-filters');
+  _tagHtml('tag-filters-mobile');
 }
 
 function _jobListHtml(jobs) {
@@ -186,8 +168,7 @@ function renderJobList() {
     ? State.jobs
     : State.jobs.filter(j=>(j.tags||[]).includes(State.activeTag));
   const html = _jobListHtml(filtered);
-  // 데스크탑 + 모바일 패널 + 드로어 동기화
-  ['job-list','job-list-mobile','job-list-drawer'].forEach(id=>{
+  ['job-list','job-list-mobile'].forEach(id=>{
     const el = $(id);
     if (el) el.innerHTML = html;
   });
@@ -199,32 +180,65 @@ function selectJob(jobId) {
   if (!job) return;
   State.selectedJob = job;
 
-  $('welcome-view').classList.add('hidden');
-  $('job-view').classList.remove('hidden');
-
-  $('jv-name').textContent = job.name;
-  $('jv-desc').textContent = job.description || '';
-  $('jv-tags').innerHTML = (job.tags||[]).map(t=>`<span class="tag-chip">${t}</span>`).join('');
-
-  renderJobList();
-  renderActiveProcesses();
-  loadHistory(true);
-
-  // 실행 중인 것 자동 연결
-  const running = Object.keys(State.activeProcesses)
-    .filter(rid=>State.activeProcesses[rid].job_id===jobId);
-  if (running.length>0) attachLog(running[0]);
-
-  // 모바일: 드로어 닫고 monitor 탭으로 이동
   if (isMobile()) {
-    closeDrawer();
+    // ── 모바일 ──
+    // welcome 숨기고 job-view 표시
+    const mWelcome = $('mobile-welcome');
+    const mJobView = $('mobile-job-view');
+    if (mWelcome) mWelcome.style.display = 'none';
+    if (mJobView) {
+      mJobView.classList.remove('hidden');
+      mJobView.style.display = 'flex';
+    }
+
+    if ($('m-jv-name')) $('m-jv-name').textContent = job.name;
+    if ($('m-jv-desc')) $('m-jv-desc').textContent = job.description || '';
+
+    renderJobList();
+    renderMobileActiveProcesses();
+    loadHistory(true);
+
+    // 실행 중인 것 자동 연결
+    const running = Object.keys(State.activeProcesses)
+      .filter(rid=>State.activeProcesses[rid].job_id===jobId);
+    if (running.length>0) attachMobileLog(running[0]);
+
+    // monitor 탭으로 이동
     switchTab('monitor');
+  } else {
+    // ── 데스크탑 ──
+    $('welcome-view').classList.add('hidden');
+    $('job-view').classList.remove('hidden');
+
+    $('jv-name').textContent = job.name;
+    $('jv-desc').textContent = job.description || '';
+    $('jv-tags').innerHTML = (job.tags||[]).map(t=>`<span class="tag-chip">${t}</span>`).join('');
+
+    renderJobList();
+    renderActiveProcesses();
+    loadHistory(true);
+
+    const running = Object.keys(State.activeProcesses)
+      .filter(rid=>State.activeProcesses[rid].job_id===jobId);
+    if (running.length>0) attachLog(running[0]);
   }
 }
 
-// ─── Active Processes ─────────────────────────────────────────────
+// 모바일 뒤로가기: monitor -> jobs
+function mobileGoBack() {
+  const mWelcome = $('mobile-welcome');
+  const mJobView = $('mobile-job-view');
+  State.selectedJob = null;
+  if (mWelcome) mWelcome.style.display = '';
+  if (mJobView) { mJobView.classList.add('hidden'); mJobView.style.display = 'none'; }
+  renderJobList();
+  switchTab('jobs');
+}
+
+// ─── Active Processes (데스크탑) ──────────────────────────────────
 function renderActiveProcesses() {
   const el = $('active-processes');
+  if (!el) return;
   const procs = Object.entries(State.activeProcesses)
     .filter(([,p])=>!State.selectedJob||p.job_id===State.selectedJob.id);
 
@@ -235,6 +249,29 @@ function renderActiveProcesses() {
   el.innerHTML = procs.map(([runId,p])=>`
     <div class="proc-chip ${State.activeRunId===runId?'proc-chip-active':''}"
          onclick="App.attachLog('${runId}')">
+      <span class="proc-dot"></span>
+      <span class="proc-id">${runId.slice(0,8)}</span>
+      <span class="proc-pid">PID ${p.pid}</span>
+      <span class="proc-elapsed">${elapsed(p.started_at)}</span>
+      <button class="proc-kill" onclick="event.stopPropagation(); App.killProcess('${runId}')">✕ 종료</button>
+    </div>
+  `).join('');
+}
+
+// ─── Active Processes (모바일) ────────────────────────────────────
+function renderMobileActiveProcesses() {
+  const el = $('m-active-processes');
+  if (!el) return;
+  const procs = Object.entries(State.activeProcesses)
+    .filter(([,p])=>!State.selectedJob||p.job_id===State.selectedJob.id);
+
+  if (!procs.length) {
+    el.innerHTML = '<span class="no-proc">실행 중인 프로세스 없음</span>';
+    return;
+  }
+  el.innerHTML = procs.map(([runId,p])=>`
+    <div class="proc-chip ${State.mActiveRunId===runId?'proc-chip-active':''}"
+         onclick="App.attachMobileLog('${runId}')">
       <span class="proc-dot"></span>
       <span class="proc-id">${runId.slice(0,8)}</span>
       <span class="proc-pid">PID ${p.pid}</span>
@@ -256,7 +293,6 @@ function updateActiveBadge() {
   }
   if (badge) badge.classList.toggle('is-active', count>0);
 
-  // 이력 탭 뱃지
   const hBadge = $('historyBadge');
   if (hBadge) {
     if (count>0) { hBadge.textContent=count; hBadge.classList.remove('hidden'); }
@@ -264,7 +300,7 @@ function updateActiveBadge() {
   }
 }
 
-// ─── Log Viewer ───────────────────────────────────────────────────
+// ─── Log Viewer (데스크탑) ────────────────────────────────────────
 function appendLog(text, cls='') {
   const el = $('log-viewer');
   if (!el) return;
@@ -318,17 +354,69 @@ function attachLog(runId) {
       appendLog('에러: '+msg.message,'log-err');
     }
   };
-
   renderActiveProcesses();
-
-  // 모바일: 자동으로 monitor 탭으로 이동
-  if (isMobile()) switchTab('monitor');
 }
 
 function toggleAutoScroll() {
   State.autoScroll = !State.autoScroll;
   const btn = $('btn-autoscroll');
   if (btn) btn.textContent=`↓ 자동스크롤 ${State.autoScroll?'ON':'OFF'}`;
+}
+
+// ─── Log Viewer (모바일) ──────────────────────────────────────────
+function appendMobileLog(text, cls='') {
+  const el = $('m-log-viewer');
+  if (!el) return;
+  const now  = new Date().toLocaleTimeString('ko-KR',{hour12:false});
+  const line = document.createElement('div');
+  line.className = `log-line ${cls}`;
+  line.innerHTML = `<span class="log-ts">[${now}]</span> ${escapeHtml(String(text))}`;
+  el.appendChild(line);
+  if (State.mAutoScroll) el.scrollTop = el.scrollHeight;
+}
+
+function clearMobileLog() {
+  const el = $('m-log-viewer');
+  if (el) el.innerHTML = '';
+  State.mActiveRunId = null;
+  const badge = $('m-log-status-badge');
+  if (badge) { badge.textContent=''; badge.className='hidden'; }
+}
+
+function setMobileLogStatus(status) {
+  const el = $('m-log-status-badge');
+  if (!el) return;
+  el.className='';
+  el.innerHTML = statusBadge(status);
+}
+
+function attachMobileLog(runId) {
+  if (State.mWs) { State.mWs.close(); State.mWs=null; }
+  State.mActiveRunId = runId;
+  clearMobileLog();
+  setMobileLogStatus('RUNNING');
+
+  const ws = new WebSocket(API.wsUrl(`/ws/logs/${runId}`));
+  State.mWs = ws;
+
+  ws.onopen  = ()=>appendMobileLog('WebSocket 연결됨 ✓','log-system');
+  ws.onerror = ()=>appendMobileLog('WebSocket 오류','log-err');
+  ws.onclose = ()=>appendMobileLog('WebSocket 연결 종료','log-system');
+  ws.onmessage = (ev)=>{
+    const msg = JSON.parse(ev.data);
+    if (msg.type==='log') {
+      appendMobileLog(msg.line);
+    } else if (msg.type==='done') {
+      setMobileLogStatus(msg.status||'COMPLETED');
+      appendMobileLog(`─── 종료: ${msg.status||'COMPLETED'} (exit: ${msg.exit_code??'-'}) ───`,'log-system');
+      ws.close();
+      pollProcesses();
+      loadHistory(true);
+    } else if (msg.type==='error') {
+      appendMobileLog('에러: '+msg.message,'log-err');
+    }
+  };
+  renderMobileActiveProcesses();
 }
 
 // ─── Run Modal ────────────────────────────────────────────────────
@@ -389,9 +477,14 @@ async function submitRun() {
       pid: run.pid, started_at: run.started_at,
     };
     renderActiveProcesses();
+    renderMobileActiveProcesses();
     renderJobList();
-    attachLog(run.run_id);
     updateActiveBadge();
+    if (isMobile()) {
+      attachMobileLog(run.run_id);
+    } else {
+      attachLog(run.run_id);
+    }
   } catch (e) {
     toast('실행 실패: '+e.message,'error');
   }
@@ -405,6 +498,7 @@ async function killProcess(runId) {
     toast('⬛ 강제 종료 완료','info');
     delete State.activeProcesses[runId];
     renderActiveProcesses();
+    renderMobileActiveProcesses();
     renderJobList();
     updateActiveBadge();
     loadHistory(true);
@@ -423,6 +517,7 @@ async function pollProcesses() {
     });
     State.activeProcesses = newMap;
     renderActiveProcesses();
+    renderMobileActiveProcesses();
     renderJobList();
     updateActiveBadge();
   } catch(_) {}
@@ -434,8 +529,8 @@ async function loadHistory(reset=true) {
   const jobFilter = State.selectedJob?`&job_id=${State.selectedJob.id}`:'';
   try {
     const data = await API.get(`/api/history?page=${State.historyPage}&size=20${jobFilter}`);
-    renderHistory(data.items, reset);          // 데스크탑
-    renderHistoryMobile(data.items, reset);    // 모바일 패널
+    renderHistory(data.items, reset);
+    renderHistoryMobile(data.items, reset);
     State.historyHasMore = State.historyPage < data.pages;
     [$('history-more-btn'),$('history-more-btn-mobile')].forEach(btn=>{
       if (btn) btn.classList.toggle('hidden',!State.historyHasMore);
@@ -473,6 +568,7 @@ function renderHistory(items, reset) {
   items.forEach(item=>{
     const div=document.createElement('div');
     div.className='history-item';
+    div.dataset.runId=item.id;
     div.innerHTML=_historyItemHtml(item);
     el.appendChild(div);
   });
@@ -486,17 +582,10 @@ function renderHistoryMobile(items, reset) {
   items.forEach(item=>{
     const div=document.createElement('div');
     div.className='history-item';
+    div.dataset.runId=item.id;
     div.innerHTML=_historyItemHtml(item);
     el.appendChild(div);
   });
-}
-
-// 모바일 이력 패널과 데스크탑을 동기화
-function syncHistoryMobile() {
-  const src = $('history-list');
-  const dst = $('history-list-mobile');
-  if (!src||!dst) return;
-  dst.innerHTML = src.innerHTML;
 }
 
 async function showLogModal(runId) {
@@ -520,10 +609,8 @@ async function deleteHistory(runId, btn) {
   if (!confirm('이 실행 이력을 삭제하시겠습니까?')) return;
   try {
     await API.del(`/api/history/${runId}`);
-    // 데스크탑 + 모바일 모두 제거
-    document.querySelectorAll('.history-item').forEach(el=>{
-      if (el.querySelector(`[onclick*="${runId}"]`)) el.remove();
-    });
+    // data-run-id로 정확하게 제거
+    document.querySelectorAll(`.history-item[data-run-id="${runId}"]`).forEach(el=>el.remove());
     toast('이력 삭제 완료','info');
   } catch(e) {
     toast('삭제 실패: '+e.message,'error');
@@ -548,34 +635,104 @@ async function refreshAll() {
 // ─── Expose to HTML ───────────────────────────────────────────────
 window.App = {
   selectJob, openRunModal, closeRunModal, submitRun,
-  killProcess, attachLog, clearLog, toggleAutoScroll,
-  loadHistory, loadMoreHistory, showLogModal, closeLogModal,
-  deleteHistory, filterTag, refreshAll, pollProcesses,
-  switchTab, toggleDrawer, closeDrawer,
+  killProcess, attachLog, attachMobileLog, clearLog, clearMobileLog,
+  toggleAutoScroll, loadHistory, loadMoreHistory,
+  showLogModal, closeLogModal, deleteHistory,
+  filterTag, refreshAll, pollProcesses,
+  switchTab, mobileGoBack,
 };
 
 // ─── Bootstrap ────────────────────────────────────────────────────
-document.addEventListener('DOMContentLoaded', async () => {
-  // 모바일이면 Jobs 탭이 기본
+document.addEventListener('DOMContentLoaded', () => {
+  // ── 공통 버튼 이벤트 ──
+  const refreshAllBtn = $('refreshAllBtn');
+  if (refreshAllBtn) refreshAllBtn.addEventListener('click', refreshAll);
+
+  const historyRefreshBtn = $('historyRefreshBtn');
+  if (historyRefreshBtn) historyRefreshBtn.addEventListener('click', ()=>loadHistory(true));
+
+  const btnRun = $('btn-run');
+  if (btnRun) btnRun.addEventListener('click', openRunModal);
+
+  const btnClearlog = $('btn-clearlog');
+  if (btnClearlog) btnClearlog.addEventListener('click', clearLog);
+
+  const btnAutoscroll = $('btn-autoscroll');
+  if (btnAutoscroll) btnAutoscroll.addEventListener('click', toggleAutoScroll);
+
+  const historyMoreBtn = $('history-more-btn');
+  if (historyMoreBtn) historyMoreBtn.addEventListener('click', loadMoreHistory);
+
+  // ── 모달 버튼 ──
+  const runModalCloseBtn = $('runModalCloseBtn');
+  if (runModalCloseBtn) runModalCloseBtn.addEventListener('click', closeRunModal);
+
+  const runModalCancelBtn = $('runModalCancelBtn');
+  if (runModalCancelBtn) runModalCancelBtn.addEventListener('click', closeRunModal);
+
+  const runModalSubmitBtn = $('runModalSubmitBtn');
+  if (runModalSubmitBtn) runModalSubmitBtn.addEventListener('click', submitRun);
+
+  const logModalCloseBtn = $('logModalCloseBtn');
+  if (logModalCloseBtn) logModalCloseBtn.addEventListener('click', closeLogModal);
+
+  // 모달 배경 클릭으로 닫기
+  const runModal = $('run-modal');
+  if (runModal) runModal.addEventListener('click', e=>{
+    if (e.target === runModal) closeRunModal();
+  });
+  const logModal = $('log-modal');
+  if (logModal) logModal.addEventListener('click', e=>{
+    if (e.target === logModal) closeLogModal();
+  });
+
+  // ── 모바일 전용 버튼 ──
+  const mBtnRun = $('m-btn-run');
+  if (mBtnRun) mBtnRun.addEventListener('click', openRunModal);
+
+  const mBtnClearlog = $('m-btn-clearlog');
+  if (mBtnClearlog) mBtnClearlog.addEventListener('click', clearMobileLog);
+
+  const mobileBackBtn = $('mobileBackBtn');
+  if (mobileBackBtn) mobileBackBtn.addEventListener('click', mobileGoBack);
+
+  const mHistoryRefreshBtn = $('mHistoryRefreshBtn');
+  if (mHistoryRefreshBtn) mHistoryRefreshBtn.addEventListener('click', ()=>loadHistory(true));
+
+  const historyMoreBtnMobile = $('history-more-btn-mobile');
+  if (historyMoreBtnMobile) historyMoreBtnMobile.addEventListener('click', loadMoreHistory);
+
+  // ── 모바일 탭바 버튼 ──
+  document.querySelectorAll('.tabbar-item').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const tab = btn.dataset.tab;
+      if (tab) switchTab(tab);
+    });
+  });
+
+  // ── 초기화 ──
   if (isMobile()) {
     switchTab('jobs');
   }
 
-  await loadJobs();
-  await pollProcesses();
-  await loadHistory(true);
+  (async () => {
+    await loadJobs();
+    await pollProcesses();
+    await loadHistory(true);
+  })();
 
   setInterval(pollProcesses, 5000);
   setInterval(()=>loadHistory(true), 30000);
 
-  // 화면 크기 변경 시 탭 초기화
+  // 화면 크기 변경 대응
   window.addEventListener('resize', ()=>{
-    if (!isMobile()) {
-      // 데스크탑으로 전환 시 모바일 패널 숨기기
-      $('mobileJobs').classList.remove('active');
-      $('mobileHistory').classList.remove('active');
-    } else {
+    if (isMobile()) {
       switchTab(State.mobileTab);
+    } else {
+      // 데스크탑 전환 시 모바일 패널 숨기기
+      ['mobileJobs','mobileMonitor','mobileHistory'].forEach(id=>{
+        const el=$(id); if(el) el.classList.remove('active');
+      });
     }
   });
 });
