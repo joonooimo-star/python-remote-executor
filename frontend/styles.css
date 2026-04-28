@@ -150,7 +150,7 @@ a { text-decoration: none; }
 
 /* ── Left Sidebar ────────────────────────────────── */
 .sidebar {
-  width: 272px;
+  width: 288px;
   flex-shrink: 0;
   background: var(--bg-sidebar);
   border-right: 1px solid var(--border);
@@ -237,20 +237,30 @@ a { text-decoration: none; }
   border-radius: 0 2px 2px 0;
 }
 
-.job-item-row  { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+.job-item-row  {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 6px;
+  flex-wrap: wrap;           /* 배지가 넘칠 경우 아래로 */
+}
 .job-item-name {
   font-size: 13px;
   font-weight: 600;
   color: var(--text);
   flex: 1; min-width: 0;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  word-break: break-word;    /* 긴 이름 줄바꿈 허용 */
+  white-space: normal;       /* nowrap 제거 */
+  line-height: 1.4;
 }
 .job-item.selected .job-item-name { color: var(--primary-dark); }
 .job-item-desc {
   font-size: 11px;
   color: var(--text4);
   margin-top: 3px;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  word-break: break-word;    /* 설명도 줄바꿈 허용 */
+  white-space: normal;
+  line-height: 1.4;
 }
 .job-item-tags { display: flex; flex-wrap: wrap; gap: 3px; margin-top: 6px; }
 
@@ -448,7 +458,9 @@ a { text-decoration: none; }
   font-size: 12px; font-weight: 600;
   color: var(--text);
   flex: 1; min-width: 0;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  word-break: break-word;    /* 긴 이름 줄바꿈 허용 */
+  white-space: normal;
+  line-height: 1.4;
 }
 .history-meta-row {
   display: flex; align-items: center;
@@ -820,7 +832,7 @@ a { text-decoration: none; }
    ══════════════════════════════════════════════════ */
 @media (max-width: 1024px) {
   .history-sidebar { display: none; }   /* 이력 사이드바 숨김 */
-  .sidebar { width: 230px; }
+  .sidebar { width: 256px; }
 }
 
 /* ══════════════════════════════════════════════════
@@ -893,8 +905,8 @@ a { text-decoration: none; }
 
   /* Job 카드 */
   .job-item { padding: 13px 14px; }
-  .job-item-name { font-size: 14px; }
-  .job-item-desc { font-size: 12px; }
+  .job-item-name { font-size: 14px; white-space: normal; word-break: break-word; }
+  .job-item-desc { font-size: 12px; white-space: normal; word-break: break-word; }
 
   /* 이력 카드 */
   .history-item { padding: 12px 14px; }
