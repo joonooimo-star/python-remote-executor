@@ -182,13 +182,15 @@ function renderActiveProcesses() {
 
 function updateActiveBadge() {
   const count = Object.keys(State.activeProcesses).length;
-  const dot = document.querySelector('#active-badge .badge-dot');
+  const badge  = $('active-badge');
+  const dot    = document.querySelector('#active-badge .badge-dot');
   const countEl = $('active-count');
   if (countEl) countEl.textContent = `${count}개 실행 중`;
   if (dot) {
     dot.classList.toggle('dot-active', count > 0);
-    dot.classList.toggle('dot-idle', count === 0);
+    dot.classList.toggle('dot-idle',   count === 0);
   }
+  if (badge) badge.classList.toggle('is-active', count > 0);
 }
 
 // ─── Log Viewer ───────────────────────────────────────────────────

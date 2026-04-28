@@ -13,6 +13,8 @@
   <div class="header-left">
     <span class="logo-icon">🐍</span>
     <span class="logo-text">Python Remote Executor</span>
+    <span class="logo-sep"></span>
+    <span class="logo-sub">원격 실행 플랫폼</span>
   </div>
   <div class="header-right">
     <span id="active-badge" class="active-badge">
@@ -30,7 +32,7 @@
   <!-- LEFT: Job 목록 -->
   <aside class="sidebar">
     <div class="sidebar-header">
-      <span class="sidebar-title">📋 Job 목록</span>
+      <span class="sidebar-title">Job 목록</span>
       <span id="job-count" class="sidebar-count">0개</span>
     </div>
     <div class="sidebar-tags">
@@ -79,7 +81,7 @@
       <div class="log-section">
         <div class="log-toolbar">
           <div class="log-toolbar-left">
-            <span class="log-label">📋 로그</span>
+            <span class="log-label">실행 로그</span>
             <span id="log-run-id" class="log-run-id"></span>
             <span id="log-status-badge" class="hidden"></span>
           </div>
@@ -100,7 +102,7 @@
   <!-- RIGHT: 실행 이력 -->
   <aside class="history-sidebar">
     <div class="sidebar-header">
-      <span class="sidebar-title">📜 실행 이력</span>
+      <span class="sidebar-title">실행 이력</span>
       <button onclick="App.loadHistory()" class="icon-btn">↺</button>
     </div>
     <div id="history-list" class="history-list">
